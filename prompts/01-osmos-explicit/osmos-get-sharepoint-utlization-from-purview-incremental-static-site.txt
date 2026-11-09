@@ -2,7 +2,7 @@ Ask Project Osmos to create a  Python/Jupyter Fabric notebook that:
 
 Defines parameters
 
-Target SharePoint site prefix: https://nfp.sharepoint.com/sites/NFPCanadaServiceModel* (asterisk treated as “starts with”).
+Target SharePoint site prefix: https://{myorg}.sharepoint.com/sites/{MySiteName}* (asterisk treated as “starts with”; replace the parameters in the URL with actual values).
 Fixed time window: yesterday from 09:00–10:00 in America/New_York.
 A whitelist of allowed Operation values (SharePoint/audit operations).
 Content types: ["Audit.SharePoint"].

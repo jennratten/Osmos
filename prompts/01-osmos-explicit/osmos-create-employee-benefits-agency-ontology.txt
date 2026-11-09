@@ -1,1 +1,1 @@
-Use Project Osmos to create an ontology for employee benefits insurance agencies sales and operations using the `benefits` schema of the `OsmosInsurance_Jenn` lakehouse.
+Use Project Osmos to create an ontology for employee benefits insurance agencies sales and operations using the `benefits` schema of the `{MyLakehouseName}` lakehouse.

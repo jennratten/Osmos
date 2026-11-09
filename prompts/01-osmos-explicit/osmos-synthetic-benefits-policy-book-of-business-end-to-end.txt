@@ -1,0 +1,66 @@
+PROJECT OSMOS REQUEST
+=====================
+
+OBJECTIVE
+---------
+Use Project Osmos to create an end-to-end Microsoft Fabric architecture for a synthetic group benefits insurance Policy Book of Business platform relevant to a brokerage business.
+
+DATA REQUIREMENTS
+-----------------
+Use only fake, generated data.
+
+The solution must include:
+- 5 consecutive policy years
+- 1,000 accounts
+- 5,000 policies
+- 10 policy types
+- 10 carriers
+- 100 agencies
+- 500 producers
+- 22 U.S. states
+- 15 industries
+
+ARCHITECTURE REQUIREMENTS
+-------------------------
+The solution must be:
+- Metadata-driven
+- Incrementally loaded with very low latency
+- Built on OneLake
+- Designed using Medallion architecture
+
+SOLUTION SCOPE
+--------------
+Include all of the following capabilities:
+- Synthetic data generation
+- Data ingestion
+- Data transformation
+- Data quality
+- Data exploration
+- Gold modeling
+- Power BI
+- Ontology
+- Fabric Data Agent
+- Governed GraphQL API
+
+IMPLEMENTATION-READY DELIVERABLES
+---------------------------------
+Produce:
+- Pipelines
+- Notebooks
+- Schemas
+- DAX
+- GraphQL schema and queries
+- Mermaid diagrams
+- Security and governance specifications
+- Observability specifications
+- Acceptance criteria
+
+PUBLISHING AND LINEAGE
+----------------------
+- Publish all Power BI and Microsoft Fabric items to the Fabric workspace.
+- Ensure lineage is available for all published items.
+
+NAMING AND SCHEMA STANDARDS
+---------------------------
+- Include the word "benefits" in all Power BI and Microsoft Fabric item names so they are easy to identify.
+- Add all tables created in the lakehouse to the "benefits" schema.

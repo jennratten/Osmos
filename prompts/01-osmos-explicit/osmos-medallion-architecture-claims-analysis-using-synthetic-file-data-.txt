@@ -1,0 +1,13 @@
+Use project osmos to create a Microsoft Fabric medallion data engineering solution in the target workspace and Lakehouse using the four synthetic files: claims.csv, members.csv, providers.csv, and policies.csv.
+
+Requirements:
+• Preserve raw inputs in Bronze with ingestion metadata.
+• Create Silver conformed tables with explicit data types and deterministic business keys.
+• Remove exact duplicates but retain rejected rows in an exception table with reason codes.
+• Validate claim dates, paid amounts, policy relationships, provider relationships, and member relationships.
+• Create a Gold monthly claim summary by policy, provider specialty, and service month.
+• Add reconciliation checks from source to Silver and Silver to Gold.
+• Make the process idempotent and safe to rerun.
+• Generate a validation notebook and a concise README describing artifacts, assumptions, and unresolved issues.
+
+Before writing anything, show the plan and ask for approval.

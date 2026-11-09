@@ -1,0 +1,13 @@
+Configure the existing `benefits_policy_book_data_agent` with the verified benefits-policy-book data sources available in the current workspace/Lakehouse, clear agent instructions, the appropriate data-analysis tools, and code interpreter enabled. Preserve source data and existing artifacts unless a configuration update is required. The agent must support a multi-step renewal process to help account teams, benefits consultants, finance leaders, and book-of-business managers understand the financial and operational impact of upcoming renewals. Its business value is to provide a consistent and reproducible method for estimating renewal exposure without requiring analysts to manually combine policy, rate, enrollment, and effective-date data.
+
+The configured agent must support these capabilities, grounded only in verified available data and explicitly flagging missing fields, assumptions, data-quality limitations, and uncertainty:
+- Create a statistical summary of a selected benefits portfolio, providing an executive-level statistical profile more informative than a simple policy count or premium total.
+- Perform relationship and correlation analysis across benefit design, premium, participation, claims, employer characteristics, and renewal outcomes. Use correlation for hypothesis generation and never present it as causation.
+- Create trend analyses across effective periods for benefit-strategy discussions while preventing unsupported causal conclusions.
+- Perform period-over-period portfolio comparisons.
+- Perform variance analysis against benchmark, budget, or expectation when those reference values exist.
+- Perform ranking and portfolio segmentation.
+- Detect outliers and anomalies.
+- Profile benefits data quality.
+
+For the renewal workflow, discover the available policy, rate, enrollment, effective-date, claims, employer, benefit-design, benchmark/budget, and outcome fields; define the joins and grain explicitly; calculate renewal exposure and supporting measures; provide reusable outputs and examples for each analysis; validate calculations and row counts; and explain limitations. Configure the agent instructions so every response states the selected population and effective-period filters, distinguishes observed results from assumptions or estimates, avoids causal claims from observational relationships, and reports data-quality issues that could change the conclusion. Reconcile the existing agent rather than creating a duplicate, and return the agent configuration details, data sources, instruction summary, enabled tools/code-interpreter status, validation evidence, and any gaps or unresolved prerequisites.

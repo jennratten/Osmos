@@ -1,0 +1,67 @@
+Ask Project Osmos to create a  Python/Jupyter Fabric notebook that:
+
+Defines parameters
+
+Target SharePoint site prefix: https://nfp.sharepoint.com/sites/NFPCanadaServiceModel* (asterisk treated as “starts with”).
+Fixed time window: yesterday from 09:00–10:00 in America/New_York.
+A whitelist of allowed Operation values (SharePoint/audit operations).
+Content types: ["Audit.SharePoint"].
+Retrieves secrets
+
+Reads tenant_id, client_id, and client_secret from Azure Key Vault via notebookutils.credentials.getSecret.
+Uses tenant_id also as publisher_identifier.
+Implements helper functions
+
+get_access_token(...): gets an OAuth2 token for https://manage.office.com/.default.
+api_get(...) and api_post(...): wrappers around requests with retry and backoff logic; api_post treats HTTP 409 as success.
+to_iso_utc(...): converts datetimes to UTC ISO strings.
+Utility functions for reading Operation and SiteUrl from event payloads, handling key casing differences.
+Builds the audit time window
+
+Computes “yesterday” in local timezone.
+Constructs local start/end datetimes for 09:00–10:00.
+Converts them to UTC ISO strings for the Office 365 Management API.
+Prints both local and UTC windows.
+Initializes the Office 365 Management API context
+
+Gets an access token.
+Sets base URL: https://manage.office.com/api/v1.0/{tenant_id}/activity/feed.
+Checks/ensures subscriptions
+
+Calls /subscriptions/list to see existing subscriptions.
+Prints existing content types and statuses.
+Logs that Audit.SharePoint subscription is already enabled (actual start calls are commented out).
+Fetches and downloads audit content
+
+list_content_uris(content_type): calls /subscriptions/content for the given contentType and time window.
+download_blob(content_uri): GETs each content URI to retrieve event records.
+For each CONTENT_TYPES entry:
+Lists content blobs for the defined time window.
+Downloads each blob’s events.
+Adds metadata fields _contentType, _windowStartUtc, _windowEndUtc to each event.
+Aggregates all events into all_events and prints total count.
+Applies required filters
+
+Builds ops_set (lowercased allowed operations).
+Filters all_events to:
+Include only events whose Operation is in the allowed list (case-insensitive).
+For Audit.SharePoint only, require SiteUrl to start with the site prefix (https://nfp.sharepoint.com/sites/NFPCanadaServiceModel).
+Stores results in filtered and prints the final count.
+Writes results to the Lakehouse
+
+Constructs a date/hour partition path based on yesterday’s date and the start hour:
+Raw JSONL path: /lakehouse/default/Files/purview_audit/raw/YYYY/MM/DD/hour=HH/events.jsonl.
+Ensures directory exists and writes one JSON line per filtered event (traceable raw output).
+Creates/updates Delta tables with Spark
+
+Initializes a Spark session.
+If there are filtered events:
+Creates an RDD from event JSON strings and reads it into a Spark DataFrame.
+Adds partition columns:
+AuditDateLocal = yesterday’s date (as string).
+AuditHourLocal = the fixed start hour (09).
+Filters SharePoint events: df_sp = df.filter(df._contentType == "Audit.SharePoint").
+Writes df_sp as a Delta table purview_audit_sharepoint, partitioned by AuditDateLocal and AuditHourLocal in append mode.
+Logs that Delta tables were written.
+If no filtered events exist, it prints that the Delta write is skipped.
+In short: The notebook pulls Office 365 Management API SharePoint audit logs for a specific site and 1‑hour window (yesterday 9–10 AM Eastern), filters them by allowed operations and site URL, writes raw JSONL to the default Lakehouse Files area, and appends curated data into a partitioned Delta table purview_audit_sharepoint.

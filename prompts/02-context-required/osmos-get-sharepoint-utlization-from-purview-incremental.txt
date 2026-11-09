@@ -1,0 +1,979 @@
+Implementation for retrieving Microsoft Purview and Office 365 Management Activity API audit operations for selected SharePoint sites and saving the results to a Microsoft Fabric Lakehouse.
+
+Act as a senior Microsoft Fabric, Microsoft Purview, Spark, Delta Lake, Python, security, and data engineering architect.
+
+Your objective is to transform the current single-site, fixed-window notebook into a production-quality, metadata-driven framework that:
+
+1. Supports one or more SharePoint site URL prefixes.
+2. Queries SharePoint audit operations incrementally.
+3. Uses Fabric variable libraries for environment-specific settings and connection information.
+4. Uses a Delta watermark table to track incremental processing.
+5. Writes immutable raw audit records to the Lakehouse Files area.
+6. Writes normalized and curated records to configurable Delta tables.
+7. Is restartable, idempotent, observable, secure, and suitable for scheduled execution.
+8. Avoids hard-coded site URLs, operation lists, time windows, secret names, connection IDs, table names, and time zones.
+
+Do not create only a conceptual design. Generate the complete, executable implementation, including Fabric notebook code, Delta table creation logic, helper functions, validation, logging, error handling, and deployment instructions.
+
+## Current workflow to refactor
+
+The existing notebook currently performs the following work:
+
+- Targets the SharePoint site prefix:
+  https://nfp.sharepoint.com/sites/NFPCanadaServiceModel*
+
+- Treats the trailing asterisk as a “starts with” operator rather than as a literal character.
+
+- Uses a fixed local audit window for yesterday from 09:00 through 10:00 in America/New_York.
+
+- Uses a whitelist of allowed SharePoint audit Operation values.
+
+- Uses the following content type:
+  Audit.SharePoint
+
+- Retrieves the following values from Azure Key Vault by using:
+  notebookutils.credentials.getSecret
+
+  - tenant_id
+  - client_id
+  - client_secret
+
+- Uses tenant_id as the publisher identifier.
+
+- Obtains an OAuth2 token for the Office 365 Management API resource scope:
+  https://manage.office.com/.default
+
+- Uses the Office 365 Management Activity API base URL:
+  https://manage.office.com/api/v1.0/{tenant_id}/activity/feed
+
+- Lists available audit content by content type and time window.
+
+- Downloads each returned audit content blob.
+
+- Adds source metadata to downloaded events.
+
+- Filters events by:
+  - Allowed Operation values, case-insensitively.
+  - SharePoint SiteUrl starting with the configured site URL prefix.
+
+- Writes raw JSONL files to:
+  /lakehouse/default/Files/purview_audit/raw/YYYY/MM/DD/hour=HH/events.jsonl
+
+- Writes curated SharePoint events to the Delta table:
+  purview_audit_sharepoint
+
+- Partitions curated records by:
+  - AuditDateLocal
+  - AuditHourLocal
+
+Replace this static implementation with the metadata-driven design described below.
+
+# 1. Required architecture
+
+Implement the framework with the following logical layers:
+
+## Configuration layer
+
+Use a Microsoft Fabric variable library for environment-level configuration, connection settings, Key Vault settings, defaults, and deployment-specific values.
+
+## Control and watermark layer
+
+Use a Delta watermark table in the Fabric Lakehouse to identify:
+
+- Which SharePoint sites are enabled for processing.
+- Which local audit windows should be processed.
+- The last successfully completed window for each configuration.
+- The next eligible incremental window.
+- The target Delta table for each configuration.
+
+## Extraction layer
+
+Use the Office 365 Management Activity API to:
+
+- Authenticate.
+- Verify the required subscription.
+- List available content blobs.
+- Download the content blobs.
+- Retry transient failures.
+- handle HTTP 409 appropriately where applicable.
+- Capture request and processing metrics.
+
+## Raw layer
+
+Persist downloaded records before curated filtering so the source response remains traceable.
+
+## Curated layer
+
+Normalize event properties, apply site and operation filters, add lineage metadata, deduplicate records, and write them to the configured Delta target table.
+
+## Monitoring layer
+
+Record the outcome of every attempted processing window, including counts, statuses, timestamps, errors, and watermark updates.
+
+# 2. Fabric variable library
+
+Use a Fabric variable library for the following variables.
+
+Required variable names:
+
+- SITE_URL
+- KEY_VAULT_URI
+- SECRET_NAME_TENANTID
+- SECRET_NAME_CLIENTID
+- SECRET_NAME_CLIENTSECRET
+- CONNECTIONID
+- LOCAL_TZ
+- WINDOW_START_HOUR_LOCAL
+- WINDOW_DURATION_HOURS
+- OPERATIONS_INCLUDE
+- CONTENT_TYPES
+- AUDIT_DATE_LOCAL
+- AUDIT_HOUR_LOCAL
+- TARGET_TABLE_NAME
+
+Use these initial example values where appropriate:
+
+SITE_URL:
+https://nfp.sharepoint.com/sites/NFPCanadaServiceModel*
+
+LOCAL_TZ:
+America/New_York
+
+WINDOW_START_HOUR_LOCAL:
+9
+
+WINDOW_DURATION_HOURS:
+1
+
+CONTENT_TYPES:
+Audit.SharePoint
+
+TARGET_TABLE_NAME:
+purview_audit_sharepoint
+
+Treat AUDIT_DATE_LOCAL and AUDIT_HOUR_LOCAL as runtime-overridable variables. Do not require them for normal incremental execution. They must support controlled replay or backfill scenarios.
+
+OPERATIONS_INCLUDE must support a comma-delimited list in which operation names may be enclosed in quotes. Parsing must:
+
+- Remove surrounding whitespace.
+- Remove matching single or double quotation marks.
+- Ignore empty values.
+- Compare operation names case-insensitively.
+- Preserve the original operation value in the output.
+- Produce a normalized lowercase set for filtering.
+
+Example input format:
+
+"FileAccessed","FileDownloaded","FileModified","FileUploaded"
+
+Do not assume that the exact example operation list is complete. Use the operation list supplied by the variable library or watermark configuration.
+
+## Variable-library access
+
+Use the supported Fabric runtime approach available in the current environment to retrieve variable-library values.
+
+Do not invent an API or access pattern. Inspect the existing project, attached artifacts, and current Fabric environment for the established variable-library retrieval pattern.
+
+If CONNECTIONID is required to retrieve or resolve the variable library, use the configured CONNECTIONID.
+
+Create a configuration loader that:
+
+- Loads all required variables.
+- Validates required values.
+- Applies safe type conversions.
+- Masks secret-related values in logs.
+- Reports missing or invalid configuration clearly.
+- Allows watermark-row values to override variable-library defaults where appropriate.
+
+# 3. Watermark table
+
+Create and maintain a Delta watermark table for incremental loading.
+
+Use a configurable table name, with the following default:
+
+purview_audit_watermark
+
+The watermark table must contain these required columns:
+
+- SITE_URL
+- LOCAL_TZ
+- WINDOW_START_HOUR_LOCAL
+- WINDOW_DURATION_HOURS
+- OPERATIONS_INCLUDE
+- CONTENT_TYPES
+- WINDOW_START_TIMESTAMP
+- WINDOW_END_TIMESTAMP
+- AUDIT_DATE_LOCAL
+- AUDIT_HOUR_LOCAL
+- TARGET_TABLE_NAME
+
+Use appropriately typed columns. Do not store every value as a string.
+
+Recommended types:
+
+- SITE_URL: STRING
+- LOCAL_TZ: STRING
+- WINDOW_START_HOUR_LOCAL: INT
+- WINDOW_DURATION_HOURS: INT
+- OPERATIONS_INCLUDE: STRING
+- CONTENT_TYPES: STRING
+- WINDOW_START_TIMESTAMP: TIMESTAMP
+- WINDOW_END_TIMESTAMP: TIMESTAMP
+- AUDIT_DATE_LOCAL: DATE
+- AUDIT_HOUR_LOCAL: INT
+- TARGET_TABLE_NAME: STRING
+
+The table must support multiple SharePoint site configurations.
+
+Each configured SITE_URL must include a trailing asterisk, for example:
+
+https://nfp.sharepoint.com/sites/NFPCanadaServiceModel*
+
+The trailing asterisk means “SiteUrl starts with this prefix.” Before filtering events, remove only the final wildcard character from the configured value. Do not remove asterisks embedded elsewhere in a URL.
+
+## Additional operational columns
+
+The required columns above must remain present. Add operational columns necessary for reliable processing, such as:
+
+- WATERMARK_ID
+- IS_ACTIVE
+- LAST_RUN_ID
+- LAST_RUN_STATUS
+- LAST_ATTEMPT_TIMESTAMP_UTC
+- LAST_SUCCESS_TIMESTAMP_UTC
+- LAST_SUCCESSFUL_WINDOW_START_TIMESTAMP
+- LAST_SUCCESSFUL_WINDOW_END_TIMESTAMP
+- LAST_RAW_EVENT_COUNT
+- LAST_FILTERED_EVENT_COUNT
+- LAST_WRITTEN_EVENT_COUNT
+- LAST_DUPLICATE_COUNT
+- LAST_ERROR_MESSAGE
+- CREATED_TIMESTAMP_UTC
+- UPDATED_TIMESTAMP_UTC
+
+Use a deterministic WATERMARK_ID based on the logical configuration, or create another stable configuration key. Explain the key design.
+
+Do not store client secrets, access tokens, tenant IDs, client IDs, or secret values in the watermark table.
+
+# 4. Watermark semantics
+
+Clearly define and implement the meaning of:
+
+- WINDOW_START_TIMESTAMP
+- WINDOW_END_TIMESTAMP
+- LAST_SUCCESSFUL_WINDOW_START_TIMESTAMP
+- LAST_SUCCESSFUL_WINDOW_END_TIMESTAMP
+
+Use half-open interval semantics wherever supported:
+
+[start_timestamp, end_timestamp)
+
+This means:
+
+- Include records at or after the start timestamp.
+- Exclude records at the exact end timestamp.
+- Use the previous successful end timestamp as the next incremental start boundary.
+
+The framework must:
+
+1. Read active watermark rows.
+2. Determine the next unprocessed local window for each row.
+3. Convert the local window to UTC for API requests.
+4. Process only completed windows.
+5. Update the successful watermark only after all required raw and curated writes succeed.
+6. Leave the successful watermark unchanged when processing fails.
+7. Record the attempted window and error details separately from the successful watermark.
+8. Support safe reruns of a failed or partially completed window.
+9. Prevent concurrent executions from incorrectly advancing the same watermark.
+10. Avoid gaps when advancing between processing windows.
+
+For the initial configuration, create a seed record corresponding to:
+
+- SITE_URL:
+  https://nfp.sharepoint.com/sites/NFPCanadaServiceModel*
+
+- LOCAL_TZ:
+  America/New_York
+
+- WINDOW_START_HOUR_LOCAL:
+  9
+
+- WINDOW_DURATION_HOURS:
+  1
+
+- CONTENT_TYPES:
+  Audit.SharePoint
+
+- TARGET_TABLE_NAME:
+  purview_audit_sharepoint
+
+Normal incremental processing must use the watermark state, not continually recompute “yesterday” after the initial seed.
+
+# 5. Initial load, incremental load, replay, and backfill modes
+
+Implement these execution modes.
+
+## INITIALIZE
+
+- Creates missing control, run-log, and target tables.
+- Seeds a watermark row when one does not already exist.
+- Does not duplicate an existing watermark configuration.
+
+## INCREMENTAL
+
+- Processes the next eligible, fully completed time window.
+- Advances the watermark only after successful completion.
+- Can optionally process multiple outstanding windows in chronological order.
+- Supports a configurable maximum number of windows per run.
+
+## REPLAY
+
+- Uses AUDIT_DATE_LOCAL and AUDIT_HOUR_LOCAL to reprocess a specific local window.
+- Does not move the primary successful watermark unless explicitly configured to do so.
+- Uses idempotent raw and curated writes.
+
+## BACKFILL
+
+- Processes a bounded local date and hour range.
+- Validates that each requested API interval is supported.
+- Divides the range into valid processing windows.
+- Processes windows in chronological order.
+- Records each window independently in the run log.
+- Does not overwrite a newer successful watermark with an older backfill window.
+
+If the Office 365 Management Activity API imposes availability, retention, throttling, or time-window restrictions, validate them against current official documentation or observed API responses. Do not silently assume that historical data will always be available.
+
+# 6. Time zone handling
+
+Use timezone-aware datetime handling.
+
+For each watermark row:
+
+1. Read LOCAL_TZ.
+2. Construct the requested start time in that local timezone.
+3. Add WINDOW_DURATION_HOURS to construct the local end.
+4. Convert both timestamps to UTC.
+5. Send valid UTC ISO 8601 values to the API.
+6. Preserve both the local and UTC window values in processing metadata.
+
+Correctly handle daylight saving time transitions.
+
+Do not implement local-to-UTC conversion through fixed numeric offsets.
+
+Log the following for every processing window:
+
+- Local window start.
+- Local window end.
+- UTC window start.
+- UTC window end.
+- Local time-zone identifier.
+- UTC offset used for each boundary.
+
+If a requested local time is ambiguous or nonexistent because of a daylight saving transition, handle it explicitly and log the decision.
+
+# 7. Authentication and secret retrieval
+
+Retrieve secrets from Azure Key Vault by using:
+
+notebookutils.credentials.getSecret
+
+Use:
+
+- KEY_VAULT_URI
+- SECRET_NAME_TENANTID
+- SECRET_NAME_CLIENTID
+- SECRET_NAME_CLIENTSECRET
+
+Retrieve:
+
+- tenant_id
+- client_id
+- client_secret
+
+Use tenant_id as the publisher identifier unless the current implementation or documented API contract requires a separately configured publisher identifier.
+
+Never print:
+
+- tenant_id unless operationally required and appropriately masked.
+- client_id in full.
+- client_secret.
+- access tokens.
+- authorization headers.
+- Key Vault secret values.
+
+Create an authentication helper such as:
+
+get_access_token(...)
+
+It must obtain an OAuth2 token for:
+
+https://manage.office.com/.default
+
+Reuse a valid token within the notebook run when possible.
+
+# 8. HTTP helper functions
+
+Implement robust helpers such as:
+
+- get_access_token(...)
+- api_get(...)
+- api_post(...)
+- to_iso_utc(...)
+- parse_delimited_config(...)
+- normalize_site_prefix(...)
+- get_case_insensitive_value(...)
+- get_event_operation(...)
+- get_event_site_url(...)
+- compute_next_window(...)
+- write_raw_events(...)
+- write_curated_events(...)
+- update_watermark(...)
+- write_run_log(...)
+
+The HTTP helpers must include:
+
+- Connection timeout.
+- Read timeout.
+- Bounded retries.
+- Exponential backoff with jitter.
+- Retry handling for transient HTTP status codes.
+- Respect for Retry-After when returned.
+- Clear handling of authentication failures.
+- Safe logging that omits credentials and tokens.
+- Response-body truncation or sanitization when logging errors.
+- HTTP 409 treated as success only for operations where 409 means the desired state already exists.
+
+Do not treat every HTTP 409 response as a universal success.
+
+# 9. Office 365 Management Activity API context
+
+Use the authenticated tenant-specific API base:
+
+https://manage.office.com/api/v1.0/{tenant_id}/activity/feed
+
+Implement and retain the subscription-checking behavior.
+
+The framework must:
+
+1. Call the subscription-list endpoint.
+2. Log the content types and statuses returned.
+3. Verify that each configured content type is enabled.
+4. Avoid repeatedly starting an already-enabled subscription.
+5. Support an explicit configuration option controlling whether the framework may start a missing subscription.
+6. Fail with an actionable message when a required subscription is unavailable and automatic start is disabled.
+
+The default configured content type is:
+
+Audit.SharePoint
+
+# 10. Content listing and download
+
+Implement a function equivalent to:
+
+list_content_uris(content_type, window_start_utc, window_end_utc)
+
+It must:
+
+- Request content for the configured content type and UTC window.
+- Handle all pagination or continuation mechanisms returned by the API.
+- Retain content identifiers and content URIs for lineage.
+- Deduplicate repeated content references.
+- Return an empty collection safely when no content is available.
+
+Implement:
+
+download_blob(content_uri)
+
+It must:
+
+- Download all event records from the content URI.
+- Validate the response format.
+- Handle empty responses.
+- Preserve source-blob lineage.
+- Prevent a single malformed record from silently discarding an otherwise valid blob.
+- Record blob-level errors in the run log or a separate error table.
+
+# 11. Source event metadata
+
+Add framework metadata to each raw event without overwriting source properties.
+
+Use a reserved metadata naming convention such as:
+
+- _contentType
+- _contentId
+- _contentUriHash
+- _windowStartUtc
+- _windowEndUtc
+- _windowStartLocal
+- _windowEndLocal
+- _siteUrlPattern
+- _watermarkId
+- _runId
+- _downloadedAtUtc
+- _sourceSystem
+- _ingestionTimestampUtc
+
+Do not store the full content URI if it contains sensitive or short-lived information. Store a safe identifier or hash where appropriate.
+
+# 12. Event property handling
+
+Audit events may contain different key casing.
+
+Create utilities that retrieve values case-insensitively for at least:
+
+- Operation
+- SiteUrl
+- Id
+- CreationTime
+- RecordType
+- UserId
+- ObjectId
+- Workload
+
+Preserve the complete source event in the raw layer.
+
+For the curated layer:
+
+- Preserve useful source fields.
+- Normalize key fields into stable columns.
+- Retain a raw JSON payload column if schema evolution could otherwise lose properties.
+- Add all framework lineage fields.
+- Handle missing optional properties without failing the full window.
+
+Do not infer missing SiteUrl or Operation values.
+
+# 13. Required filtering logic
+
+Build a lowercase operation set from OPERATIONS_INCLUDE.
+
+Filter events so that:
+
+1. Operation matches a configured allowed value case-insensitively.
+2. For Audit.SharePoint events, SiteUrl starts with the configured SITE_URL prefix after removing the final wildcard.
+3. Site URL matching is implemented consistently and documented.
+4. Events missing Operation are excluded from the curated result and counted.
+5. SharePoint events missing SiteUrl are excluded from the site-specific curated result and counted.
+6. The original source values remain unchanged.
+
+Do not apply substring matching for Operation.
+
+Do not treat an asterisk as an arbitrary regular expression.
+
+Log counts for:
+
+- Downloaded events.
+- Events missing Operation.
+- Events excluded by operation.
+- Events missing SiteUrl.
+- Events excluded by site prefix.
+- Events passing all filters.
+- Duplicate events.
+- Events written.
+
+# 14. Raw Lakehouse output
+
+Write raw audit data to the default Lakehouse Files area.
+
+Use a collision-resistant path that supports multiple sites, content types, windows, and reruns.
+
+Use a structure similar to:
+
+/lakehouse/default/Files/purview_audit/raw/
+  content_type={safe_content_type}/
+  site={safe_site_identifier}/
+  audit_date_local=YYYY-MM-DD/
+  audit_hour_local=HH/
+  run_id={run_id}/
+  events.jsonl
+
+Do not place a full SharePoint URL directly in a folder name. Generate a deterministic, filesystem-safe site identifier or hash.
+
+Requirements:
+
+- One valid JSON object per line.
+- UTF-8 encoding.
+- Deterministic and traceable path generation.
+- No unsafe characters in directory names.
+- No accidental overwrite of data from a different attempt.
+- Replay behavior must be explicitly defined.
+- Raw output must be written before curated output.
+- Empty windows must still be represented in the run log even if no JSONL file is created.
+
+# 15. Curated Delta output
+
+Write filtered SharePoint records to the configured TARGET_TABLE_NAME.
+
+For the initial configuration:
+
+purview_audit_sharepoint
+
+Add these partition columns:
+
+- AuditDateLocal
+- AuditHourLocal
+
+Partition by these columns unless an examination of the expected volume shows that this would produce excessively small partitions. If you recommend a different physical design, explain the recommendation but retain the required columns.
+
+Use Delta Lake.
+
+Do not rely on simple append mode alone. Implement idempotent behavior.
+
+Preferred deduplication order:
+
+1. Use a stable source event identifier when present.
+2. Otherwise derive a deterministic event key from stable source properties.
+3. If necessary, use a hash of canonicalized event content plus source and window metadata.
+
+Use Delta MERGE or an equivalent safe pattern to avoid duplicate curated records when:
+
+- A notebook reruns.
+- A content blob is returned more than once.
+- A failed window is retried.
+- A replay overlaps a previously successful load.
+
+Do not deduplicate solely by AuditDateLocal and AuditHourLocal.
+
+Support schema evolution deliberately. Do not silently enable unrestricted schema drift without validation and logging.
+
+# 16. Run-log table
+
+Create a Delta run-log table with a default name such as:
+
+purview_audit_run_log
+
+Include at least:
+
+- RUN_ID
+- WATERMARK_ID
+- EXECUTION_MODE
+- SITE_URL
+- CONTENT_TYPE
+- TARGET_TABLE_NAME
+- WINDOW_START_LOCAL
+- WINDOW_END_LOCAL
+- WINDOW_START_UTC
+- WINDOW_END_UTC
+- STATUS
+- STARTED_TIMESTAMP_UTC
+- COMPLETED_TIMESTAMP_UTC
+- CONTENT_BLOB_COUNT
+- RAW_EVENT_COUNT
+- FILTERED_EVENT_COUNT
+- WRITTEN_EVENT_COUNT
+- DUPLICATE_EVENT_COUNT
+- EXCLUDED_OPERATION_COUNT
+- EXCLUDED_SITE_COUNT
+- MISSING_OPERATION_COUNT
+- MISSING_SITE_URL_COUNT
+- RETRY_COUNT
+- ERROR_CATEGORY
+- ERROR_MESSAGE
+
+Use statuses such as:
+
+- STARTED
+- SUCCEEDED
+- SUCCEEDED_NO_DATA
+- FAILED
+- PARTIAL
+- SKIPPED
+- LOCKED
+
+Ensure a failed run is observable even when the notebook terminates with an exception.
+
+# 17. Watermark update transaction rules
+
+Apply the following sequence:
+
+1. Create a RUN_ID.
+2. Record the window as STARTED.
+3. Authenticate and verify subscriptions.
+4. List content references.
+5. Download content.
+6. Write raw JSONL.
+7. Normalize and filter records.
+8. Write curated Delta records idempotently.
+9. Record final counts.
+10. Mark the run as SUCCEEDED or SUCCEEDED_NO_DATA.
+11. Advance the watermark in a guarded update.
+
+Never advance the watermark before the raw and curated work for the window succeeds.
+
+If any required write fails:
+
+- Mark the run FAILED.
+- Record the error.
+- Preserve the previous successful watermark.
+- Rethrow an actionable exception so Fabric orchestration can detect failure.
+
+Use guarded Delta updates so an older or concurrent run cannot overwrite a newer watermark value.
+
+# 18. Concurrency and locking
+
+Design a lightweight concurrency-control strategy.
+
+At minimum:
+
+- Detect an active run for the same WATERMARK_ID and window.
+- Prevent two scheduled executions from advancing the same watermark independently.
+- Use a lock expiration or stale-run strategy so an abandoned STARTED record does not permanently block processing.
+- Use optimistic concurrency or a guarded Delta MERGE/UPDATE.
+- Log when a window is skipped because another run owns it.
+
+Explain the selected approach in the notebook documentation.
+
+# 19. Validation
+
+Add up-front validation for:
+
+- SITE_URL is not empty.
+- SITE_URL ends in an asterisk.
+- LOCAL_TZ is a valid IANA time-zone name.
+- WINDOW_START_HOUR_LOCAL is from 0 through 23.
+- WINDOW_DURATION_HOURS is positive.
+- OPERATIONS_INCLUDE produces at least one operation.
+- CONTENT_TYPES produces at least one content type.
+- TARGET_TABLE_NAME is a valid and safely quoted Spark table identifier.
+- Key Vault settings are present.
+- Required secret names are present.
+- Replay inputs include both AUDIT_DATE_LOCAL and AUDIT_HOUR_LOCAL.
+- Local start and end timestamps form a valid interval.
+- The API request window is valid for the source API.
+
+Fail before extraction when configuration is invalid.
+
+# 20. Security requirements
+
+Follow enterprise security practices:
+
+- Do not hard-code credentials.
+- Do not print secrets or tokens.
+- Do not persist credentials in Delta tables or raw files.
+- Mask sensitive configuration in logs.
+- Validate content URIs before requesting them.
+- Avoid dynamic SQL injection through target-table configuration.
+- Validate table and path identifiers.
+- Do not use Python eval.
+- Do not use untrusted operation values to construct executable expressions.
+- Keep Key Vault access isolated in the authentication/configuration layer.
+- Document the required identity and permissions without embedding tenant-specific secrets.
+
+# 21. Notebook structure
+
+Organize the generated Fabric notebook into clearly marked sections:
+
+1. Purpose and architecture
+2. Imports
+3. Runtime parameters
+4. Variable-library loading
+5. Configuration validation
+6. Key Vault secret retrieval
+7. Authentication
+8. HTTP helpers
+9. Time-window helpers
+10. Delta table initialization
+11. Watermark loading
+12. Run acquisition and concurrency control
+13. Subscription verification
+14. Content listing
+15. Content download
+16. Raw JSONL persistence
+17. Event normalization and filtering
+18. Curated Delta MERGE
+19. Run-log completion
+20. Watermark advancement
+21. Error handling
+22. Operational summary
+23. Deployment and scheduling instructions
+24. Replay and backfill examples
+25. Test cases
+
+Avoid placing the full implementation in one monolithic notebook cell.
+
+# 22. Code-quality requirements
+
+Generate complete executable code, not pseudocode.
+
+The implementation must:
+
+- Use clear type hints where practical.
+- Use docstrings for reusable functions.
+- Avoid duplicate logic.
+- Use structured configuration objects or dataclasses where supported.
+- Use UTC for system timestamps.
+- Use timezone-aware datetimes.
+- Use Spark DataFrames for scalable data processing.
+- Avoid collecting large audit datasets to the driver.
+- Avoid creating a large RDD from an in-memory Python list when a distributed or staged approach is available.
+- Keep API retrieval bounded and observable.
+- Use deterministic hashes where needed.
+- Use safe Spark column references.
+- Handle empty DataFrames without schema inference failures.
+- Define a stable schema for control and run-log tables.
+- Include useful comments, but do not over-comment obvious Python statements.
+
+If the API responses must initially be processed on the driver, explicitly document the scalability boundary and stage data to Lakehouse files before distributed Spark transformation.
+
+# 23. Required outputs
+
+Produce all of the following:
+
+## A. Architecture summary
+
+Explain:
+
+- Variable-library responsibilities.
+- Watermark-table responsibilities.
+- Run-log responsibilities.
+- Raw and curated layers.
+- Incremental-window logic.
+- Idempotency strategy.
+- Concurrency strategy.
+- Failure-recovery behavior.
+
+## B. Watermark DDL
+
+Provide executable Spark SQL or PySpark that creates:
+
+- purview_audit_watermark
+- purview_audit_run_log
+- purview_audit_sharepoint, if it must be initialized in advance
+
+## C. Seed logic
+
+Provide idempotent seed logic for:
+
+https://nfp.sharepoint.com/sites/NFPCanadaServiceModel*
+
+Use:
+
+- America/New_York
+- Start hour 9
+- Duration 1 hour
+- Audit.SharePoint
+- purview_audit_sharepoint
+
+Do not duplicate the seed row if it already exists.
+
+## D. Complete Fabric notebook
+
+Provide the complete notebook implementation, section by section, with no omitted helper functions.
+
+## E. Variable-library configuration guide
+
+List each variable with:
+
+- Purpose.
+- Expected type.
+- Example value.
+- Whether it is required.
+- Whether it may be overridden by the watermark table.
+- Whether it is a normal runtime parameter or only used for replay/backfill.
+
+Do not expose actual secret values.
+
+## F. Scheduling guidance
+
+Describe how to schedule the notebook through a Fabric Data Pipeline or other appropriate Fabric orchestration mechanism.
+
+The scheduled process should:
+
+- Run after the configured audit window is complete.
+- Pass the execution mode.
+- Capture notebook failure.
+- Allow safe reruns.
+- Avoid overlapping executions.
+
+## G. Test plan
+
+Include tests for:
+
+- Initial watermark creation.
+- Existing watermark detection.
+- Empty API window.
+- One valid SharePoint event.
+- Operation matching with different casing.
+- Quoted comma-delimited operation parsing.
+- Site URL matching.
+- Similar but nonmatching site URL.
+- Missing Operation.
+- Missing SiteUrl.
+- Multiple content blobs.
+- Pagination.
+- Duplicate event.
+- HTTP throttling.
+- Expired token.
+- Invalid time zone.
+- Daylight saving transition.
+- Raw write succeeds but curated write fails.
+- Successful rerun of a failed window.
+- Replay of an existing window.
+- Concurrent run attempt.
+- No-data successful window.
+- Multiple active SharePoint site configurations.
+
+## H. Acceptance criteria
+
+The implementation is complete only when all of these criteria are met:
+
+1. No static SharePoint site reference remains in extraction or filtering logic.
+2. No static target-table reference remains in reusable write logic.
+3. Key Vault identifiers come from the variable library.
+4. SITE_URL ends in an asterisk and is interpreted as a prefix.
+5. Operations are filtered case-insensitively from configuration.
+6. Audit.SharePoint is supported as a configurable content type.
+7. Local windows are converted correctly to UTC.
+8. The successful watermark advances only after required writes succeed.
+9. Failed windows can be rerun without creating duplicate curated events.
+10. Replay does not incorrectly move a newer incremental watermark backward.
+11. Raw JSONL remains traceable to the site, content type, run, and window.
+12. Every processing attempt is recorded in the run-log table.
+13. Multiple site configurations can be processed independently.
+14. Secrets and tokens never appear in notebook output or persisted tables.
+15. The final notebook can execute in Microsoft Fabric without unresolved placeholders, except for clearly identified deployment-specific values.
+
+# 24. Implementation decision rules
+
+When modifying the existing implementation:
+
+- Preserve working authentication and API patterns unless they conflict with security or incremental-processing requirements.
+- Replace hard-coded values with configuration.
+- Do not remove raw-data traceability.
+- Do not advance a watermark based only on successful API retrieval.
+- Do not use append-only curated writes without deduplication.
+- Do not mark an empty valid window as a failure.
+- Do not interpret a missing subscription as “no data.”
+- Do not swallow exceptions.
+- Do not fabricate unsupported Fabric APIs.
+- Validate uncertain Microsoft API or Fabric behavior before coding it.
+- Clearly identify any environment-specific prerequisite that cannot be resolved from the existing project.
+
+# 25. Final response format
+
+Return the result in this order:
+
+1. Architecture and implementation decisions.
+2. Variable-library configuration.
+3. Watermark and run-log schemas.
+4. Table-creation code.
+5. Seed logic.
+6. Complete Fabric notebook code.
+7. Scheduling and orchestration instructions.
+8. Replay and backfill examples.
+9. Test plan.
+10. Acceptance-criteria checklist.
+11. Assumptions and environment-specific prerequisites.
+
+Before presenting the final answer, perform a consistency review to verify:
+
+- Every referenced function is implemented.
+- Every referenced variable is defined.
+- Spark SQL and PySpark syntax are valid.
+- Delta MERGE keys are consistent.
+- Column names are consistent across table creation, reads, writes, and updates.
+- Local and UTC timestamps are not accidentally interchanged.
+- Watermarks are not advanced on failure.
+- Empty-result handling does not cause schema errors.
+- No secret value can be printed.
+- Replay and backfill cannot move a newer watermark backward.
+- The trailing SITE_URL asterisk is handled only as a final prefix wildcard.

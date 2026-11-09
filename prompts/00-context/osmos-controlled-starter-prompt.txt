@@ -1,0 +1,9 @@
+Use Project Osmos for this Microsoft Fabric data engineering task.
+Before running anything:
+1. Confirm the target workspace and Lakehouse from the full Fabric browser URL.
+2. Identify whether the task is read-only or write-capable.
+3. Show the planned steps, artifacts, and validation approach.
+4. Use Fabric-specific skills and conventions.
+5. Ask before running commands or changing Fabric artifacts.
+6. If an existing task exists in .dataprojects, resume it instead of creating a duplicate.
+Do not use unrelated plugins, MCP servers, or custom agents.

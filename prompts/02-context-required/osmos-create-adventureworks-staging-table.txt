@@ -1,0 +1,24 @@
+Create a customer sales summary table from `SalesOrderHeader`, `SalesOrderDetail`, and `Customer`.
+
+Transformations:
+
+- Join `SalesOrderHeader` to `SalesOrderDetail` using SalesOrderID.
+- Join to `Customer` using CustomerID.
+- Calculate:
+
+- Total Revenue
+- Total Orders
+- Average Order Value
+- First Purchase Date
+- Most Recent Purchase Date
+- Aggregate at the customer level.
+
+Output:
+
+- Create a Delta table named `CustomerSalesSummary`.
+
+Validation:
+
+- Every customer in the output must exist in the Customer table.
+- Total revenue in the summary table must equal the sum of LineTotal from SalesOrderDetail.
+- No duplicate CustomerID values in the output.

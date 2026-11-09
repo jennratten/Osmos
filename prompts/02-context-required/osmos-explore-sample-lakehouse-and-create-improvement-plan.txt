@@ -1,0 +1,1 @@
+Please explore the sample lakehouse table and recommend a safe quality-improvement plan.
